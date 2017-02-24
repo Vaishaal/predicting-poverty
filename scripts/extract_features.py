@@ -7,7 +7,7 @@ import caffe
 
 
 # If using GPU, set to True
-GPU = False
+GPU = True 
 if GPU:
   caffe.set_mode_gpu()
   caffe.set_device(0)
@@ -15,18 +15,28 @@ else:
   caffe.set_mode_cpu()
 
 
-def get_features(net, locs_file):
+def get_features(net, locs_file, batch_size):
   '''
   Runs the forward pass of the neural net on every image.
   '''
+
+  # changing network batch size to new batch size
+  old_shape = tuple(net.blobs[net.inputs[0]].shape)
+  new_shape = (batch_size,) + old_shape[1:]
+  input_layer = net.inputs[0]
+  net.blobs[input_layer].reshape(*new_shape)
+
   img_cluster_locs, num_images = get_locs_info(locs_file)
-  num_batches = math.ceil(num_images / 32.0)
+  num_batches = math.ceil(num_images / batch_size)
   raw_features = []
   batch_num = 0
   with open(locs_file, 'r') as f:
     curr_batch = []
     for line in f:
+      if len(line.strip()) == 0: continue
       img_path = line.split()[0]
+      if (not os.path.isfile(img_path)): continue
+      if (os.stat(img_path).st_size == 0): continue
       # reads a RGB image
       input_img = imread(img_path).astype(np.float32)
       # convert to BGR
@@ -39,7 +49,7 @@ def get_features(net, locs_file):
         input_img[i, :, :] = input_img[i, :, :] - mean_bgr[i]
       curr_batch.append(input_img)
 
-      if len(curr_batch) == 32:
+      if len(curr_batch) == batch_size:
         batch_num += 1
         print("Batch %d/%d for %s" % (batch_num,
                                       num_batches, locs_file))
@@ -52,12 +62,13 @@ def get_features(net, locs_file):
       batch_num += 1
       print("Batch %d/%d for %s" % (batch_num, num_batches, locs_file))
       curr_batch = np.asarray(curr_batch)
-      batch_size = curr_batch.shape[0]
+      curr_batch_size = curr_batch.shape[0]
       # pad end batch
-      curr_batch = np.vstack((curr_batch, np.zeros((32 - batch_size, 3, 400, 400)).astype(np.float32)))
+      curr_batch = np.vstack((curr_batch, np.zeros((batch_size - curr_batch_size, 3, 400, 400)).astype(np.float32)))
       net.blobs['data'].data[...] = curr_batch
       net.forward()
-      raw_features.append(net.blobs['conv7'].data[:batch_size])
+      raw_features.append(net.blobs['conv7'].data[:curr_batch_size])
+  print(raw_features)
   raw_features = np.vstack(raw_features)
   # average pooling
   n, f, h, w = raw_features.shape
@@ -90,7 +101,7 @@ def aggregate_features(features, img_cluster_locs, clusters):
   return conv_features, image_counts
 
 
-def extract(net, countries, output_dir):
+def extract(net, countries, output_dir, batch_size):
   '''
   Runs the forward pass of the CNN on every image and then
   aggregates the features by cluster by taking the mean.
@@ -98,9 +109,9 @@ def extract(net, countries, output_dir):
   for country in countries:
     print("Extracting %s for %s" % (country, output_dir))
     locs_file = os.path.join(output_dir, country, 'downloaded_locs.txt')
-
+    print(locs_file)
     # compute conv features for every image
-    features, img_cluster_locs = get_features(net, locs_file)
+    features, img_cluster_locs = get_features(net, locs_file, batch_size)
 
     # get the master cluster ordering
     cluster_lats = np.load(os.path.join(output_dir, country, 'lats.npy'))
@@ -127,8 +138,12 @@ def get_locs_info(locs_file):
   num_images = 0
   with open(locs_file, 'r') as f:
     for line in f:
-      num_images += 1
+      if len(line.strip()) == 0: continue
+      
       img_path, lat, lon, cluster_lat, cluster_lon = line.split()
+      if (not os.path.isfile(img_path)): continue
+      if (os.stat(img_path).st_size == 0): continue
+      num_images += 1
       cluster_loc = (float(cluster_lat), float(cluster_lon))
       img_cluster_locs.append(cluster_loc)
   return img_cluster_locs, num_images
